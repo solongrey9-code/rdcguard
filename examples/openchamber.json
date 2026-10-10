@@ -1,0 +1,52 @@
+{
+  "state_dir": "%LOCALAPPDATA%\\AgentGuard",
+  "log_max_mb": 5,
+  "watchdog": {
+    "task_name": "AgentGuard-Watchdog",
+    "interval_minutes": 1,
+    "logon": true,
+    "startup_shim": false,
+    "description": "Keep the isolated OpenCode V2 + OpenChamber native host online"
+  },
+  "guards": [
+    {
+      "name": "openchamber",
+      "description": "OpenCode V2 + OpenChamber native host (delegates healing to host.py ensure, which owns pid-ownership checks and an operator-stop marker)",
+      "identity": {
+        "process_names": ["node.exe", "opencode.exe", "pythonw.exe"],
+        "cmdline_contains": ["opencode-native"]
+      },
+      "health": {
+        "mode": "all",
+        "young_grace_sec": 120,
+        "probes": [
+          { "type": "http", "url": "http://127.0.0.1:3188/", "status_lt": 500, "timeout_sec": 3 },
+          { "type": "http", "url": "http://127.0.0.1:3189/api/session", "status": [200, 401], "timeout_sec": 3 }
+        ]
+      },
+      "delegate": {
+        "ensure_command": [
+          "%LOCALAPPDATA%\\Programs\\Python\\Python310\\pythonw.exe",
+          "%USERPROFILE%\\Documents\\LivingCore2-worktrees\\opencode-native-20261008\\native\\scripts\\host.py",
+          "ensure"
+        ],
+        "start_command": [
+          "%LOCALAPPDATA%\\Programs\\Python\\Python310\\python.exe",
+          "%USERPROFILE%\\Documents\\LivingCore2-worktrees\\opencode-native-20261008\\native\\scripts\\host.py",
+          "start"
+        ],
+        "stop_command": [
+          "%LOCALAPPDATA%\\Programs\\Python\\Python310\\python.exe",
+          "%USERPROFILE%\\Documents\\LivingCore2-worktrees\\opencode-native-20261008\\native\\scripts\\host.py",
+          "stop"
+        ],
+        "healthy_timeout_sec": 120
+      },
+      "heal": {
+        "attempts": 2,
+        "healthy_timeout_sec": 120,
+        "backoff_sec": 10
+      }
+    }
+  ]
+}

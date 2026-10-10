@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/solongrey9-code/AgentGuard/main/schema/agentguard.schema.json",
+  "title": "AgentGuard configuration",
+  "description": "Boot autostart and self-healing watchdog configuration for local agent/MCP services.",
+  "type": "object",
+  "required": ["guards"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "state_dir": {
+      "type": "string",
+      "description": "Directory for locks, guard state, disarm markers and the AgentGuard journal. Defaults to %LOCALAPPDATA%\\AgentGuard (Windows) or ~/.local/state/agentguard.",
+      "default": "%LOCALAPPDATA%\\AgentGuard"
+    },
+    "log_max_mb": { "type": "number", "minimum": 0.1, "default": 5, "description": "AgentGuard journal rotation threshold." },
+    "watchdog": {
+      "type": "object",
+      "properties": {
+        "task_name": { "type": "string", "default": "AgentGuard-Watchdog" },
+        "interval_minutes": { "type": "integer", "minimum": 1, "maximum": 1439, "default": 3 },
+        "logon": { "type": "boolean", "default": true, "description": "Add a logon trigger alongside the repetition trigger." },
+        "startup_shim": { "type": "boolean", "default": false, "description": "Also write a hidden VBS shim to the user's Startup folder." },
+        "description": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "guards": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/guard" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" },
+      "description": "Command plus arguments as an argv list; no shell quoting games."
+    },
+    "action": {
+      "type": "object",
+      "required": ["command"],
+      "properties": {
+        "command": { "$ref": "#/$defs/argv" },
+        "hidden": { "type": "boolean", "default": true, "description": "CREATE_NO_WINDOW on Windows; GUI apps are unaffected." },
+        "cwd": { "type": "string" },
+        "stdout_log": { "type": "string", "description": "Optional file to capture the started process's stdout/stderr." }
+      },
+      "additionalProperties": false
+    },
+    "identity": {
+      "type": "object",
+      "properties": {
+        "process_names": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Exact image names, e.g. node.exe."
+        },
+        "cmdline_contains": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Substrings that must ALL appear in the command line. When the command line cannot be read, the process is treated as not-owned (fail closed)."
+        }
+      },
+      "required": ["process_names"],
+      "additionalProperties": false
+    },
+    "probe": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "port"],
+          "properties": {
+            "type": { "const": "tcp" },
+            "host": { "type": "string", "default": "127.0.0.1" },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "timeout_sec": { "type": "number", "default": 2 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "url"],
+          "properties": {
+            "type": { "const": "http" },
+            "url": { "type": "string" },
+            "timeout_sec": { "type": "number", "default": 3 },
+            "status": { "type": "array", "items": { "type": "integer" } },
+            "status_lt": { "type": "integer", "description": "Healthy when HTTP status < this value (e.g. 500)." },
+            "expect_json": { "type": "object", "description": "Healthy only when the JSON body contains these key: value pairs." }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "path", "markers", "healthy"],
+          "properties": {
+            "type": { "const": "log" },
+            "path": { "type": "string" },
+            "window_bytes": { "type": "integer", "default": 4194304 },
+            "since": { "enum": ["window", "last-start"], "default": "window" },
+            "markers": {
+              "type": "object",
+              "description": "state name -> list of case-insensitive substrings. The last matching line in the scanned region wins.",
+              "additionalProperties": { "type": "array", "items": { "type": "string" } }
+            },
+            "healthy": { "type": "array", "items": { "type": "string" } },
+            "starting": { "type": "array", "items": { "type": "string" } },
+            "failed": { "type": "array", "items": { "type": "string" } },
+            "offline": { "type": "array", "items": { "type": "string" } },
+            "empty_state": { "type": "string", "default": "unknown" }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": {
+            "type": { "const": "established" },
+            "timeout_sec": { "type": "number", "default": 15 }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "command"],
+          "properties": {
+            "type": { "const": "cmd" },
+            "command": { "$ref": "#/$defs/argv" },
+            "timeout_sec": { "type": "number", "default": 30 },
+            "exit_codes": { "type": "array", "items": { "type": "integer" }, "default": [0] }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["type", "identity"],
+          "properties": {
+            "type": { "const": "process" },
+            "identity": { "$ref": "#/$defs/identity" }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "dependency": {
+      "type": "object",
+      "required": ["type"],
+      "description": "A dependency probe run before starting a guard. Same fields as the matching probe type, plus name/wait_sec/autostart. 'established' is not allowed here.",
+      "properties": {
+        "type": { "enum": ["tcp", "http", "cmd", "process"] },
+        "name": { "type": "string" },
+        "host": { "type": "string", "default": "127.0.0.1" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "url": { "type": "string" },
+        "timeout_sec": { "type": "number" },
+        "status": { "type": "array", "items": { "type": "integer" } },
+        "status_lt": { "type": "integer" },
+        "expect_json": { "type": "object" },
+        "command": { "$ref": "#/$defs/argv" },
+        "exit_codes": { "type": "array", "items": { "type": "integer" } },
+        "identity": { "$ref": "#/$defs/identity" },
+        "wait_sec": { "type": "number", "default": 30 },
+        "autostart": { "$ref": "#/$defs/action" }
+      },
+      "additionalProperties": false
+    },
+    "guard": {
+      "type": "object",
+      "required": ["name", "health"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,64}$" },
+        "description": { "type": "string" },
+        "enabled": { "type": "boolean", "default": true },
+        "observe_only": { "type": "boolean", "default": false, "description": "Report health, never start/stop/kill." },
+        "identity": { "$ref": "#/$defs/identity" },
+        "health": {
+          "type": "object",
+          "required": ["probes"],
+          "properties": {
+            "mode": { "enum": ["all", "any"], "default": "all" },
+            "young_grace_sec": { "type": "number", "default": 0, "description": "Treat an owned process younger than this as 'starting' instead of stale." },
+            "probes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/probe" } }
+          },
+          "additionalProperties": false
+        },
+        "requires": { "type": "array", "items": { "$ref": "#/$defs/dependency" } },
+        "start": { "$ref": "#/$defs/action" },
+        "stop": {
+          "type": "object",
+          "properties": {
+            "kill": { "type": "boolean", "default": true, "description": "Kill owned processes that match the identity (managed mode)." },
+            "command": { "$ref": "#/$defs/argv" }
+          },
+          "additionalProperties": false
+        },
+        "delegate": {
+          "type": "object",
+          "required": ["ensure_command"],
+          "description": "Hand healing to the target's own idempotent ensure command instead of managing the lifecycle.",
+          "properties": {
+            "ensure_command": { "$ref": "#/$defs/argv" },
+            "start_command": { "$ref": "#/$defs/argv" },
+            "stop_command": { "$ref": "#/$defs/argv" },
+            "cwd": { "type": "string" },
+            "healthy_timeout_sec": { "type": "number", "default": 90 }
+          },
+          "additionalProperties": false
+        },
+        "heal": {
+          "type": "object",
+          "properties": {
+            "attempts": { "type": "integer", "minimum": 1, "maximum": 10, "default": 3 },
+            "healthy_timeout_sec": { "type": "number", "minimum": 5, "maximum": 3600, "default": 90 },
+            "backoff_sec": { "type": "number", "minimum": 0, "maximum": 300, "default": 5 },
+            "kill_stale": { "type": "boolean", "default": true }
+          },
+          "additionalProperties": false
+        },
+        "rotate": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+              "path": { "type": "string" },
+              "max_mb": { "type": "number", "default": 40 },
+              "keep": { "type": "integer", "minimum": 1, "default": 1 }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

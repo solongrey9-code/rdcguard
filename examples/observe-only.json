@@ -1,0 +1,17 @@
+{
+  "state_dir": "%LOCALAPPDATA%\\AgentGuard",
+  "guards": [
+    {
+      "name": "observe-port",
+      "description": "Observe-only template: report health, never touch the process. Great as a first step before switching to managed mode.",
+      "enabled": false,
+      "observe_only": true,
+      "health": {
+        "mode": "all",
+        "probes": [
+          { "type": "tcp", "host": "127.0.0.1", "port": 8080, "timeout_sec": 2 }
+        ]
+      }
+    }
+  ]
+}

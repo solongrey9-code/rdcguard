@@ -1,0 +1,26 @@
+{
+  "state_dir": "%LOCALAPPDATA%\\AgentGuard",
+  "guards": [
+    {
+      "name": "proxy",
+      "description": "Local SOCKS/HTTP proxy client (v2rayN example). Many agent services depend on this port; protect it as a first-class guard instead of a blind dependency.",
+      "identity": {
+        "process_names": ["v2rayN.exe"],
+        "cmdline_contains": ["v2rayN-windows-64"]
+      },
+      "health": {
+        "mode": "all",
+        "young_grace_sec": 60,
+        "probes": [
+          { "type": "tcp", "host": "127.0.0.1", "port": 10808, "timeout_sec": 2 }
+        ]
+      },
+      "start": {
+        "command": ["%USERPROFILE%\\Desktop\\GREEN\\v2rayN-windows-64\\v2rayN.exe"],
+        "hidden": true
+      },
+      "stop": { "kill": false },
+      "heal": { "attempts": 3, "healthy_timeout_sec": 60, "backoff_sec": 5, "kill_stale": false }
+    }
+  ]
+}

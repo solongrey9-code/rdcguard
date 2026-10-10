@@ -1,0 +1,26 @@
+{
+  "state_dir": "%LOCALAPPDATA%\\AgentGuard",
+  "guards": [
+    {
+      "name": "ollama",
+      "description": "Local model server on http://127.0.0.1:11434",
+      "enabled": false,
+      "identity": {
+        "process_names": ["ollama app.exe", "ollama.exe"]
+      },
+      "health": {
+        "mode": "all",
+        "young_grace_sec": 60,
+        "probes": [
+          { "type": "http", "url": "http://127.0.0.1:11434/api/tags", "status": [200], "timeout_sec": 3 }
+        ]
+      },
+      "start": {
+        "command": ["%LOCALAPPDATA%\\Programs\\Ollama\\ollama app.exe"],
+        "hidden": true
+      },
+      "stop": { "kill": true },
+      "heal": { "attempts": 3, "healthy_timeout_sec": 60, "backoff_sec": 5, "kill_stale": true }
+    }
+  ]
+}

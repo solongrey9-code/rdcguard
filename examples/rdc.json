@@ -1,0 +1,70 @@
+{
+  "state_dir": "%LOCALAPPDATA%\\AgentGuard",
+  "log_max_mb": 5,
+  "watchdog": {
+    "task_name": "AgentGuard-Watchdog",
+    "interval_minutes": 3,
+    "logon": true,
+    "startup_shim": false,
+    "description": "Keep the desktop-commander remote device (RDC) online; recover the boot proxy race"
+  },
+  "guards": [
+    {
+      "name": "rdc",
+      "description": "Desktop Commander remote device via Remote MCP (mcp.desktopcommander.app)",
+      "identity": {
+        "process_names": ["node.exe"],
+        "cmdline_contains": ["desktop-commander"]
+      },
+      "health": {
+        "mode": "any",
+        "young_grace_sec": 120,
+        "probes": [
+          { "type": "established", "timeout_sec": 15 },
+          {
+            "type": "log",
+            "path": "%USERPROFILE%\\.local\\bin\\rdc_log.txt",
+            "window_bytes": 4194304,
+            "since": "last-start",
+            "markers": {
+              "online": ["Device marked as online", "Device ready:"],
+              "connecting": ["Connecting to Remote MCP"],
+              "offline": ["Device marked as offline", "Device shutdown complete"],
+              "failed": ["Device startup failed"]
+            },
+            "healthy": ["online"],
+            "starting": ["connecting"],
+            "failed": ["failed"],
+            "offline": ["offline"]
+          }
+        ]
+      },
+      "requires": [
+        {
+          "name": "proxy-10808",
+          "type": "tcp",
+          "host": "127.0.0.1",
+          "port": 10808,
+          "wait_sec": 40,
+          "autostart": {
+            "command": ["%USERPROFILE%\\Desktop\\GREEN\\v2rayN-windows-64\\v2rayN.exe"]
+          }
+        }
+      ],
+      "start": {
+        "command": ["cmd", "/c", "%USERPROFILE%\\.local\\bin\\start_desktop_commander.bat"],
+        "hidden": true
+      },
+      "stop": { "kill": true },
+      "heal": {
+        "attempts": 3,
+        "healthy_timeout_sec": 90,
+        "backoff_sec": 5,
+        "kill_stale": true
+      },
+      "rotate": [
+        { "path": "%USERPROFILE%\\.local\\bin\\rdc_log.txt", "max_mb": 40, "keep": 1 }
+      ]
+    }
+  ]
+}

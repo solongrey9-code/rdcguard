@@ -1,0 +1,25 @@
+{
+  "state_dir": "%LOCALAPPDATA%\\AgentGuard",
+  "guards": [
+    {
+      "name": "mcp-stdio-example",
+      "description": "Template: a stdio MCP server kept alive by process identity only. Replace names/needles/command before enabling.",
+      "enabled": false,
+      "identity": {
+        "process_names": ["node.exe"],
+        "cmdline_contains": ["@modelcontextprotocol/server-everything"]
+      },
+      "health": {
+        "mode": "all",
+        "young_grace_sec": 60,
+        "probes": [{ "type": "process", "identity": { "process_names": ["node.exe"], "cmdline_contains": ["@modelcontextprotocol/server-everything"] } }]
+      },
+      "start": {
+        "command": ["cmd", "/c", "npx", "-y", "@modelcontextprotocol/server-everything"],
+        "hidden": true
+      },
+      "stop": { "kill": true },
+      "heal": { "attempts": 3, "healthy_timeout_sec": 60, "backoff_sec": 5, "kill_stale": true }
+    }
+  ]
+}

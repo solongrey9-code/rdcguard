@@ -1,0 +1,32 @@
+{
+  "state_dir": "%LOCALAPPDATA%\\AgentGuard",
+  "watchdog": {
+    "task_name": "AgentGuard-Watchdog",
+    "interval_minutes": 3,
+    "logon": true
+  },
+  "guards": [
+    {
+      "name": "windows-local-commander",
+      "description": "Native MCP bridge exposed to ChatGPT via Tailscale Funnel (http://127.0.0.1:8765). Delegates healing to its own idempotent START.cmd, which already owns pid checks and an elevated watchdog. No identity block: its processes run elevated, so a non-elevated AgentGuard cannot read their command line (fail-closed by design) and does not need to - the delegate never kills.",
+      "health": {
+        "mode": "all",
+        "probes": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:8765/healthz",
+            "status": [200],
+            "expect_json": { "ok": true },
+            "timeout_sec": 3
+          }
+        ]
+      },
+      "delegate": {
+        "ensure_command": ["cmd", "/c", "%USERPROFILE%\\Documents\\ChatGPT-Local-WebBridge\\START.cmd"],
+        "stop_command": ["cmd", "/c", "%USERPROFILE%\\Documents\\ChatGPT-Local-WebBridge\\STOP.cmd"],
+        "healthy_timeout_sec": 90
+      },
+      "heal": { "attempts": 2, "healthy_timeout_sec": 90, "backoff_sec": 10 }
+    }
+  ]
+}
