@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/solongrey9-code/AgentGuard/main/schema/agentguard.schema.json",
+  "$id": "https://raw.githubusercontent.com/solongrey9-code/rdcguard/main/schema/agentguard.schema.json",
   "title": "AgentGuard configuration",
   "description": "Boot autostart and self-healing watchdog configuration for local agent/MCP services.",
   "type": "object",

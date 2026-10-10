@@ -1,97 +1,143 @@
-# 设计与实战教训
+# Design notes and battle lessons
 
-AgentGuard 不是凭空设计的框架，而是两台真实机制（RDC 看门狗 / OpenChamber 原生宿主）在长期运行中踩坑、修复、再抽象的结果。本文记录这些教训如何变成通用设计。
+English | [简体中文](DESIGN.zh-CN.md)
 
-## 1. 为什么需要「守护的守护」
+AgentGuard was not designed on a whiteboard. It is the abstraction of two
+mechanisms (the RDC watchdog and the OpenChamber native host) that ran for
+months, broke in specific ways, got fixed, and taught their lessons. This
+document maps each lesson to where it lives in the design.
 
-被守护的服务常见的死法不是崩溃，而是**无声地死去**：
+## 1. Why a watchdog needs a watchdog
 
-- 开机时与依赖竞态：服务在代理就绪前启动，连接失败后自行退出，之后无人重启（RDC 的 `Device startup failed: fetch failed` 即为典型）；
-- 一次性启动脚本只在登录时跑一次，之后进程死掉就再也没人管；
-- 服务有自带日志，但没人看；界面显示离线时才知道。
+Services rarely die by crashing loudly. They die **silently**:
 
-所以 AgentGuard 的核心循环是：**周期性检查 → 不健康就治 → 治不好如实上报**，并用计划任务把「周期」做成系统级承诺（登录触发 + 每 N 分钟，`IgnoreNew`，`StartWhenAvailable`）。
+- a boot-time race with a dependency: the service starts first, can't
+  connect, exits on its own, and nobody restarts it (the RDC story:
+  `Device startup failed: fetch failed`);
+- a start-once-at-logon script with no supervision afterwards;
+- the service keeps its own log, nobody reads it, and "offline" is only
+  noticed in a web UI.
 
-## 2. 教训清单（以及它在 AgentGuard 里的落点）
+So the core loop is: **check periodically -> heal when unhealthy -> report
+honestly when healing fails**, with the schedule itself guaranteed by Task
+Scheduler (logon trigger + repetition, `IgnoreNew`, `StartWhenAvailable`).
 
-### 2.1 启动竞态必须用「依赖门控」消除，而不是靠重试碰运气
+## 2. Lessons, and where they land in AgentGuard
 
-RDC 的核心教训：v2rayN 与 RDC 同属 HKCU Run，无顺序保证；RDC 启动即连远程 MCP，代理没就绪就 `fetch failed` 自杀。
+### 2.1 Boot races are eliminated by gating, not by retrying harder
 
-**落点**：`requires` + `autostart` + `wait_sec`。依赖不健康就绝不启动主服务，并在必要时先拉起依赖。重试是兜底，不是策略。
+The RDC and its proxy both live in `HKCU\...\Run` with no ordering guarantee;
+the device connected before the proxy was up and killed itself with
+`fetch failed`.
 
-### 2.2 Node 24 的 `fetch()` 默认无视 `HTTP_PROXY`
+**Landing:** `requires` + `autostart` + `wait_sec`. Never start the service
+before its dependency is provably reachable; start the dependency first when
+allowed. Retries are a fallback, not a strategy.
 
-实测：设虚假代理 env 后 `fetch()` 仍直连成功；必须 `NODE_USE_ENV_PROXY=1` 才生效。症状是日志里 `fetch failed` / `Channel subscription timed out` 反复出现，而 `curl -x` 同一代理完全正常。排查时极易误判为「代理挂了」。
+### 2.2 Node 24's `fetch()` ignores `HTTP_PROXY` by default
 
-**落点**：
-- 启动脚本（bat）里保证 `NODE_USE_ENV_PROXY=1`（示例 `start_desktop_commander.bat` 的做法）；
-- AgentGuard 自己的本地 HTTP 探针**强制绕过系统代理**（`ProxyHandler({})`），避免系统代理抖动影响健康判定。
+Measured directly: with a fake proxy in the environment, `fetch()` still went
+direct; only `NODE_USE_ENV_PROXY=1` makes it honor the env proxy. The symptom
+is endless `fetch failed` / `Channel subscription timed out` lines while
+`curl -x` through the same proxy works perfectly - a notorious false alarm
+for "the proxy is down".
 
-### 2.3 日志状态判定必须防「旧状态冒充新状态」
+**Landing:**
+- the launcher keeps `NODE_USE_ENV_PROXY=1` (see `examples/rdc-launcher.bat`);
+- AgentGuard's own local HTTP probes force-bypass system proxies
+  (`ProxyHandler({})`) so proxy glitches never distort health decisions.
 
-`rdc_log.txt` 可能几十 MB，且单条工具输出（如 base64 图片）能到 300KB+，扫描窗口太小会完全错过状态标记。
+### 2.3 Log state must not let old runs impersonate new ones
 
-**落点**：
-- 日志探针默认 4MiB 窗口；
-- `since: "last-start"`：每次启动前记录文件偏移量，只认之后的新行；
-- 状态机取「最后一条命中的 marker」，并把 `Device ready` 与 `Device marked as online` 都映射为 `online`（服务更新措辞不会误伤）；
-- 提供 `established` 探针做实证：进程持有已建立 TCP 连接比在日志里翻找可靠得多——这也是原版 rdc_ensure.ps1 的 liveness fallback。
+`rdc_log.txt` can grow to tens of MB, and a single tool output (base64 images)
+can exceed 300 KB - a small scan window can miss every state marker.
 
-### 2.4 「不健康」不等于「该杀」
+**Landing:**
+- the log probe defaults to a 4 MiB window;
+- `since: "last-start"` records a byte offset before every start and reads
+  only newer lines;
+- the state machine takes the *last* matched marker, and maps both
+  `Device ready:` and `Device marked as online` to `online` so wording
+  changes do not break detection;
+- the `established` probe provides independent, log-independent proof of
+  life (inherited straight from the original script's liveness fallback).
 
-服务可能只是启动慢/网络抖动。原始脚本用「进程年龄 < 90s 且处于 connecting → 只等不杀」对抗误判。
+### 2.4 "Unhealthy" does not mean "kill it"
 
-**落点**：`young_grace_sec` + 日志状态机的 `starting` 列表。宽限期内无论探针怎么说，都不杀不重启。
+A service may simply be slow to boot or hit a network blip. The original
+script refused to restart a process younger than 90 s stuck in `connecting`.
 
-### 2.5 Fail-closed：宁可不认领，绝不误杀
+**Landing:** `young_grace_sec` + the log state machine's `starting` list.
+Inside the grace window, no matter what probes say, nothing is killed.
 
-原始 RDC 脚本用命令行精确匹配认领 node 进程；OpenChamber host 用 pid 文件 + 命令行双重校验才敢 taskkill。
+### 2.5 Fail-closed: never adopt (or kill) what you cannot prove
 
-**落点**：
-- `identity` 双条件（镜像名 + 命令行子串全部命中）；
-- 命令行不可读时视为「不是自己的进程」；
-- 端口被未知进程占用时拒绝替换（OpenChamber host 的「refusing to touch an unknown process」）；
-- 操作员 `stop` 用 disarm 标记，而不是靠杀一次算数（OpenChamber host 的 `operator-stop.marker`）。
+The original RDC script claimed processes by exact command-line match; the
+OpenChamber host required pid file + command-line verification before any
+`taskkill`.
 
-### 2.6 pythonw / 计划任务下没有 stdout
+**Landing:**
+- `identity` requires image name AND every command-line needle;
+- an unreadable command line means "not ours";
+- a port held by an unknown process stops the heal ("refusing to touch an
+  unknown process");
+- operator `stop` writes a durable disarm marker instead of "killing once
+  and hoping" (the OpenChamber host's `operator-stop.marker` idea made generic).
 
-计划任务里跑 `pythonw` 没有控制台，`print()` 会直接抛错——一个纯输出语句就能让看门狗殉职。旧版 Windows 控制台还是 GBK 代码页，服务日志里混进来的 emoji（如 `🔌 Device marked as online`）会让 JSON 打印直接 UnicodeEncodeError。
+### 2.6 No stdout under pythonw / Task Scheduler
 
-**落点**：
-- CLI 启动时把 `sys.stdout/stderr` 缺失接到 `os.devnull`；
-- 对控制台流 `reconfigure(errors="replace")`，任何字符都能安全打印；
-- 日志文件一律显式 UTF-8。
+A `pythonw` run has no console and `print()` raises - a pure output statement
+can kill a watchdog. Legacy Windows consoles are also GBK, and a stray emoji
+from a service log (`Device marked as online`) crashed JSON printing with a
+`UnicodeEncodeError`.
 
-### 2.7 看门狗自己不能堆积、竞争与自我打架
+**Landing:**
+- missing `sys.stdout/stderr` are wired to `os.devnull`;
+- console streams are `reconfigure(errors="replace")` so any character prints;
+- all log files are explicit UTF-8.
 
-- 计划任务层面：`MultipleInstancesPolicy=IgnoreNew`；
-- 进程层面：全局 `ensure.lock`（msvcrt/flock 非阻塞）防两轮看门狗重叠；
-- guard 层面：每 guard 锁，让 `stop`/`start` 与看门狗互斥；
-- 自愈中再触发：拿不到锁就本轮跳过，下轮再来。
+### 2.7 Watchdogs must not pile up, race, or fight each other
 
-### 2.8 自愈系统不应互相抢管子
+- scheduler level: `MultipleInstancesPolicy=IgnoreNew`;
+- process level: a global non-blocking `ensure.lock` (msvcrt/flock);
+- guard level: per-guard locks so `stop`/`start` are mutually exclusive with
+  the watchdog;
+- a heal that is still running simply makes the next tick skip.
 
-OpenChamber host.py 自带 `ensure`（含 pid 所有权校验、端口 fail-closed、操作员标记）。再写一套平行的杀/拉逻辑只会打架。
+### 2.8 Self-healing systems should not steal each other's controls
 
-**落点**：`delegated` 模式——AgentGuard 只做健康判定与触发，把生命周期留给目标自己的机制。RDC 这类没有现成 ensure 的用 `managed`。
+The OpenChamber host ships its own `ensure` (pid ownership checks, port
+fail-closed, operator marker). Writing a parallel kill/start pipeline would
+only fight it.
 
-### 2.9 计划任务的结构是经过实战的
+**Landing:** `delegated` mode - AgentGuard judges health and triggers the
+target's ensure; the lifecycle stays with its owner. Targets with no ensure
+of their own (like RDC) use `managed` mode.
 
-RDC-Watchdog 的任务 XML（登录触发 + `PT3M` 重复、`IgnoreNew`、`StartWhenAvailable`、`DisallowStartIfOnBatteries=false`、交互用户、`pythonw` 隐藏执行）被完整移植为 `scheduler.build_task_xml`。
+### 2.9 The scheduler shape is battle-tested
 
-## 3. 双模式为何不合并
+The RDC-Watchdog task XML (logon trigger + `PT3M` repetition, `IgnoreNew`,
+`StartWhenAvailable`, `DisallowStartIfOnBatteries=false`, interactive user,
+hidden `pythonw` action) was ported verbatim into `scheduler.build_task_xml`.
 
-`managed` 与 `delegated` 表达的是**所有权归属**：
+## 3. Why the two modes are not merged
 
-- managed：AgentGuard 拥有生命周期 → 它必须证明进程归属、必须依赖门控、必须清理残骸；
-- delegated：目标拥有生命周期 → AgentGuard 仅观察与触发，越权即风险。
+`managed` vs `delegated` encodes **ownership**:
 
-两种模式共享同一套探针与等待逻辑，但 kill/stop 语义完全不同，合并只会让「谁有权杀谁」变得含糊——这正是此类工具最危险的地方。
+- managed: AgentGuard owns the lifecycle -> it must prove process ownership,
+  gate dependencies, clean leftovers;
+- delegated: the target owns the lifecycle -> AgentGuard only observes and
+  triggers; overstepping here is a risk, not a feature.
 
-## 4. 不做什么
+Both share the same probes and waiting logic, but the kill/stop semantics are
+fundamentally different. Merging them would blur the only question that
+matters in this tool category: *who has the right to kill what*.
 
-- 不做服务管理器：不抢 Windows SCM，不注册系统服务；
-- 不做编排器：不做依赖图拓扑排序，只做启动前的就绪门控；
-- 不做遥测：无网络上报，无秘密回显，日志只记状态与命令名；
-- 不做自动「修复」未知进程：任何不确定，一律转人工。
+## 4. What AgentGuard deliberately does not do
+
+- not a service manager: no Windows SCM, no system services;
+- not an orchestrator: no dependency-graph scheduling, only pre-start
+  readiness gating;
+- no telemetry: nothing is uploaded, no secrets are echoed, the journal keeps
+  states and command names only;
+- never "repairs" unknown processes: any uncertainty escalates to a human.

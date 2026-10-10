@@ -11,7 +11,7 @@
   "guards": [
     {
       "name": "rdc",
-      "description": "Desktop Commander remote device via Remote MCP (mcp.desktopcommander.app)",
+      "description": "Desktop Commander remote device via Remote MCP (mcp.desktopcommander.app). Launcher template: examples/rdc-launcher.bat (NODE_USE_ENV_PROXY=1). Walkthrough: docs/EXAMPLE-RDC.md.",
       "identity": {
         "process_names": ["node.exe"],
         "cmdline_contains": ["desktop-commander"]
